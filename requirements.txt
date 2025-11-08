@@ -1,0 +1,9 @@
+streamlit>=1.38.0
+ffmpeg-python>=0.2.0
+transformers>=4.43.0
+torch>=2.5.1
+numpy>=1.26.0
+Pillow>=10.3.0
+opencv-python-headless>=4.10.0.84
+scenedetect>=0.6.2
+
