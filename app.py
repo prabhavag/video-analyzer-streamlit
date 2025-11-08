@@ -15,6 +15,7 @@ from scenedetect.detectors import ContentDetector
 from transformers import CLIPModel, CLIPProcessor, pipeline
 
 
+
 def format_ffmpeg_error(error: Exception) -> str:
     stderr = getattr(error, "stderr", None)
     if isinstance(stderr, (bytes, bytearray)):
@@ -89,7 +90,6 @@ def get_video_duration(metadata: Dict[str, Any]) -> Optional[float]:
         return float(duration_str)
     except (TypeError, ValueError):
         return None
-
 
 @st.cache_resource(show_spinner=False)
 def load_caption_model(model_name: str = "Salesforce/blip-image-captioning-base"):
@@ -336,6 +336,7 @@ def main() -> None:
         tmp.write(uploaded_file.getbuffer())
         temp_video_path = Path(tmp.name)
 
+    conversion_message: Optional[str] = None
     try:
         metadata = probe_video(temp_video_path)
         summary = summarize_metadata(metadata)
@@ -350,6 +351,8 @@ def main() -> None:
 
     st.subheader("Metadata Summary")
     st.json(summary)
+    if conversion_message:
+        st.info(conversion_message)
 
     with st.spinner("Sampling frames..."):
         frames = extract_sample_frames(temp_video_path, metadata)
