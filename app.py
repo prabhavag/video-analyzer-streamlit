@@ -1,3 +1,4 @@
+import hashlib
 import io
 import math
 import tempfile
@@ -317,9 +318,20 @@ def main() -> None:
     st.title("🎬 Video Analyzer")
     st.write("Upload a video file to inspect its metadata and preview a thumbnail.")
 
-    st.session_state.setdefault("caption_original", None)
-    st.session_state.setdefault("caption_editor", "")
-    st.session_state.setdefault("alignment_result", {"score": None, "error": None, "caption": None})
+    state = st.session_state
+    state.setdefault("caption_original", None)
+    state.setdefault("caption_editor", "")
+    state.setdefault("alignment_result", {"score": None, "error": None, "caption": None})
+    state.setdefault("video_hash", None)
+    state.setdefault("metadata", None)
+    state.setdefault("summary", None)
+    state.setdefault("frames", None)
+    state.setdefault("caption_generated", None)
+    state.setdefault("caption_error_cache", None)
+    state.setdefault("scenes", None)
+    state.setdefault("scene_error", None)
+    state.setdefault("motion_results", None)
+    state.setdefault("motion_error", None)
 
     uploaded_file = st.file_uploader(
         "Select a video file",
@@ -332,17 +344,47 @@ def main() -> None:
         st.info("Awaiting video upload...")
         return
 
+    file_buffer = uploaded_file.getbuffer()
+    file_hash = hashlib.sha256(file_buffer).hexdigest()
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp:
-        tmp.write(uploaded_file.getbuffer())
+        tmp.write(file_buffer)
         temp_video_path = Path(tmp.name)
 
-    conversion_message: Optional[str] = None
-    try:
-        metadata = probe_video(temp_video_path)
-        summary = summarize_metadata(metadata)
-    except RuntimeError as error:
-        st.error(f"Unable to process the video: {error}")
-        return
+    is_new_file = state.get("video_hash") != file_hash or state.get("metadata") is None
+    if is_new_file:
+        state["video_hash"] = file_hash
+        state["alignment_result"] = {"score": None, "error": None, "caption": None}
+        state["caption_original"] = None
+        state["caption_editor"] = ""
+        state["caption_generated"] = None
+        state["caption_error_cache"] = None
+        state["frames"] = None
+        state["scenes"] = None
+        state["scene_error"] = None
+        state["motion_results"] = None
+        state["motion_error"] = None
+
+        try:
+            metadata = probe_video(temp_video_path)
+            summary = summarize_metadata(metadata)
+        except RuntimeError as error:
+            st.error(f"Unable to process the video: {error}")
+            return
+        state["metadata"] = metadata
+        state["summary"] = summary
+    else:
+        metadata = state.get("metadata")
+        summary = state.get("summary")
+        if metadata is None or summary is None:
+            try:
+                metadata = probe_video(temp_video_path)
+                summary = summarize_metadata(metadata)
+            except RuntimeError as error:
+                st.error(f"Unable to process the video: {error}")
+                return
+            state["metadata"] = metadata
+            state["summary"] = summary
 
     st.subheader("Preview")
     preview_col, _ = st.columns([1, 2])
@@ -351,22 +393,37 @@ def main() -> None:
 
     st.subheader("Metadata Summary")
     st.json(summary)
-    if conversion_message:
-        st.info(conversion_message)
 
-    with st.spinner("Sampling frames..."):
-        frames = extract_sample_frames(temp_video_path, metadata)
+    if is_new_file:
+        with st.spinner("Sampling frames..."):
+            frames = extract_sample_frames(temp_video_path, metadata)
+        state["frames"] = frames
+    else:
+        frames = state.get("frames") or []
+        if not frames:
+            with st.spinner("Sampling frames..."):
+                frames = extract_sample_frames(temp_video_path, metadata)
+            state["frames"] = frames
 
     caption: Optional[str] = None
     caption_error: Optional[str] = None
-    if frames:
-        with st.spinner("Generating caption..."):
-            try:
-                caption = generate_video_caption(frames)
-            except RuntimeError as error:
-                caption_error = str(error)
+    if is_new_file:
+        if frames:
+            with st.spinner("Generating caption..."):
+                try:
+                    caption = generate_video_caption(frames)
+                except RuntimeError as error:
+                    caption_error = str(error)
+        else:
+            caption_error = "Could not sample frames from the first 30 seconds of the video."
+
+        state["caption_generated"] = caption
+        state["caption_error_cache"] = caption_error
+        state["caption_original"] = caption
+        state["caption_editor"] = caption or ""
     else:
-        caption_error = "Could not sample frames from the first 30 seconds of the video."
+        caption = state.get("caption_generated")
+        caption_error = state.get("caption_error_cache")
 
     st.subheader("Video Caption")
     active_caption: Optional[str] = None
@@ -458,24 +515,34 @@ def main() -> None:
                 st.warning(message)
 
     duration_seconds = get_video_duration(metadata)
-    scene_error: Optional[str] = None
-    scenes: list[tuple[float, float]] = []
-    with st.spinner("Detecting scenes..."):
-        try:
-            scenes = detect_scenes(temp_video_path, duration_seconds)
-        except RuntimeError as error:
-            scene_error = str(error)
-
-    motion_results: list[Dict[str, float | int]] = []
-    motion_error: Optional[str] = None
-    if scenes:
-        with st.spinner("Analyzing motion by scene..."):
+    if is_new_file:
+        scene_error: Optional[str] = None
+        scenes: list[tuple[float, float]] = []
+        with st.spinner("Detecting scenes..."):
             try:
-                motion_results = compute_scene_motion(temp_video_path, scenes)
+                scenes = detect_scenes(temp_video_path, duration_seconds)
             except RuntimeError as error:
-                motion_error = str(error)
+                scene_error = str(error)
+        state["scenes"] = scenes
+        state["scene_error"] = scene_error
+
+        motion_results: list[Dict[str, float | int]] = []
+        motion_error: Optional[str] = None
+        if scenes:
+            with st.spinner("Analyzing motion by scene..."):
+                try:
+                    motion_results = compute_scene_motion(temp_video_path, scenes)
+                except RuntimeError as error:
+                    motion_error = str(error)
+        else:
+            motion_error = scene_error or "No scenes identified; skipping motion analysis."
+        state["motion_results"] = motion_results
+        state["motion_error"] = motion_error
     else:
-        motion_error = scene_error or "No scenes identified; skipping motion analysis."
+        scenes = state.get("scenes") or []
+        scene_error = state.get("scene_error")
+        motion_results = state.get("motion_results") or []
+        motion_error = state.get("motion_error")
 
     st.subheader("Scene Motion")
     if motion_results:
